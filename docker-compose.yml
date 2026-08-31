@@ -1,0 +1,73 @@
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: slotguard
+      POSTGRES_USER: slotguard
+      POSTGRES_PASSWORD: slotguard
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slotguard -d slotguard"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - slotguard_postgres:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      target: runtime
+    environment:
+      SLOTGUARD_DATABASE_URL: ${SLOTGUARD_DATABASE_URL:-postgresql+psycopg://slotguard:slotguard@database:5432/slotguard}
+      SLOTGUARD_JWT_SECRET: ${SLOTGUARD_JWT_SECRET:-local-development-secret-change-me}
+      SLOTGUARD_ACCESS_TOKEN_EXPIRE_MINUTES: ${SLOTGUARD_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      SLOTGUARD_ADMIN_EMAIL: ${SLOTGUARD_ADMIN_EMAIL:-admin@example.com}
+      SLOTGUARD_ADMIN_PASSWORD: ${SLOTGUARD_ADMIN_PASSWORD:-ChangeMe123!}
+      SLOTGUARD_ADMIN_NAME: ${SLOTGUARD_ADMIN_NAME:-SlotGuard Administrator}
+      SLOTGUARD_LOG_LEVEL: ${SLOTGUARD_LOG_LEVEL:-INFO}
+    depends_on:
+      database:
+        condition: service_healthy
+    ports:
+      - "${SLOTGUARD_PORT:-8010}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  database-test:
+    image: postgres:17-alpine
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: slotguard_test
+      POSTGRES_USER: slotguard
+      POSTGRES_PASSWORD: slotguard
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slotguard -d slotguard_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  test:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    environment:
+      SLOTGUARD_DATABASE_URL: postgresql+psycopg://slotguard:slotguard@database-test:5432/slotguard_test
+      SLOTGUARD_JWT_SECRET: test-secret-used-only-inside-compose
+      SLOTGUARD_ADMIN_EMAIL: admin-test@example.com
+      SLOTGUARD_ADMIN_PASSWORD: TestAdmin123!
+      SLOTGUARD_ADMIN_NAME: Test Administrator
+    depends_on:
+      database-test:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && python -m slotguard.seed && pytest"]
+
+volumes:
+  slotguard_postgres:
