@@ -4,6 +4,15 @@ Production-style REST API for booking meeting rooms. SlotGuard demonstrates
 authentication, role-based access control, PostgreSQL transactions, audit logs,
 pagination and database-level protection against overlapping bookings.
 
+## История проекта
+
+- первоначальная разработка: февраль — октябрь 2023 года (период указан
+  приблизительно);
+- подготовка и публикация портфолио-версии: август 2026 года.
+
+Репозиторий содержит актуализированную и документированную версию проекта,
+подготовленную для публичного портфолио.
+
 ## Возможности
 
 - регистрация и JWT-аутентификация;
