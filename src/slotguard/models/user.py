@@ -18,7 +18,7 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         UniqueConstraint("email", name="users_email_key"),
     )
 
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(

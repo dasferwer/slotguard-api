@@ -16,7 +16,7 @@ class Room(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         UniqueConstraint("name", name="rooms_name_key"),
     )
 
-    name: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
     location: Mapped[str] = mapped_column(String(160), nullable=False)
     capacity: Mapped[int] = mapped_column(Integer, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)

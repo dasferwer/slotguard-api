@@ -44,8 +44,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("email"),
     )
-    op.create_index(op.f("ix_users_email"), "users", ["email"], unique=True)
-
     op.create_table(
         "rooms",
         sa.Column("name", sa.String(length=100), nullable=False),
@@ -70,8 +68,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("name"),
     )
-    op.create_index(op.f("ix_rooms_name"), "rooms", ["name"], unique=True)
-
     op.create_table(
         "bookings",
         sa.Column("room_id", postgresql.UUID(as_uuid=True), nullable=False),
@@ -163,7 +159,5 @@ def downgrade() -> None:
     op.drop_index("ix_bookings_user_created", table_name="bookings")
     op.drop_index("ix_bookings_room_period", table_name="bookings")
     op.drop_table("bookings")
-    op.drop_index(op.f("ix_rooms_name"), table_name="rooms")
     op.drop_table("rooms")
-    op.drop_index(op.f("ix_users_email"), table_name="users")
     op.drop_table("users")
