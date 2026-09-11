@@ -1,1 +1,0 @@
-"""SlotGuard application package."""

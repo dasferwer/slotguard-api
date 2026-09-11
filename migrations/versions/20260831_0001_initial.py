@@ -1,4 +1,4 @@
-"""Create SlotGuard tables and booking conflict protection.
+"""Создаём таблицы и ограничение, которое не даёт забронировать одно время дважды.
 
 Revision ID: 20260831_0001
 Revises:
