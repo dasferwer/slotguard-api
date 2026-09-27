@@ -1,8 +1,12 @@
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from slotguard.api.router import api_router
 from slotguard.config import get_settings
@@ -17,7 +21,7 @@ logger = logging.getLogger("slotguard.http")
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    summary="Room booking API with conflict protection and role-based access control",
+    summary="Бронирование переговорных с защитой от конфликтов и проверкой прав",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -25,8 +29,11 @@ app.include_router(api_router)
 
 
 @app.middleware("http")
-async def request_context(request: Request, call_next):  # type: ignore[no-untyped-def]
-    request_id = request.headers.get("X-Request-ID", str(uuid4()))
+async def request_context(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    request_id = str(uuid4())
     started_at = time.perf_counter()
     response = await call_next(request)
     duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
@@ -35,11 +42,22 @@ async def request_context(request: Request, call_next):  # type: ignore[no-untyp
         "request_id=%s method=%s path=%s status=%s duration_ms=%s",
         request_id,
         request.method,
-        request.url.path,
+        getattr(request.scope.get("route"), "path", "unmatched"),
         response.status_code,
         duration_ms,
     )
     return response
+
+
+@app.exception_handler(OperationalError)
+@app.exception_handler(PoolTimeout)
+async def database_unavailable(request: Request, exc: Exception) -> JSONResponse:
+    logger.warning("database_unavailable kind=%s", type(exc).__name__)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "База данных временно недоступна"},
+        headers={"Retry-After": "1"},
+    )
 
 
 @app.get("/", include_in_schema=False)

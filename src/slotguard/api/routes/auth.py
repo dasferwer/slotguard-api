@@ -1,6 +1,7 @@
+from uuid import uuid4
+
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 
 from slotguard.api.dependencies import CurrentUser, DbSession
 from slotguard.core.security import create_access_token, hash_password, verify_password
@@ -8,6 +9,7 @@ from slotguard.models import User, UserRole
 from slotguard.schemas.auth import LoginRequest, TokenResponse
 from slotguard.schemas.user import UserCreate, UserRead
 from slotguard.services.audit import add_audit_log
+from slotguard.services.transactions import integrity_errors
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -20,28 +22,23 @@ def register(payload: UserCreate, db: DbSession) -> User:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already used")
 
     user = User(
+        id=uuid4(),
         email=email,
         full_name=payload.full_name.strip(),
         password_hash=hash_password(payload.password),
         role=UserRole.USER,
     )
-    db.add(user)
-    db.flush()
-    add_audit_log(
-        db,
-        actor_id=user.id,
-        action="user.registered",
-        entity_type="user",
-        entity_id=user.id,
-    )
-    try:
+    with integrity_errors(db):
+        db.add(user)
+        db.flush()
+        add_audit_log(
+            db,
+            actor_id=user.id,
+            action="user.registered",
+            entity_type="user",
+            entity_id=user.id,
+        )
         db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email is already used",
-        ) from exc
     db.refresh(user)
     return user
 

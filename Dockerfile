@@ -22,7 +22,8 @@ FROM base AS runtime
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY scripts ./scripts
-RUN chmod +x ./scripts/docker-entrypoint.sh
+RUN chmod +x ./scripts/docker-entrypoint.sh && useradd --uid 10001 --create-home slotguard
+USER slotguard
 
 ENTRYPOINT ["./scripts/docker-entrypoint.sh"]
 CMD ["uvicorn", "slotguard.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -33,4 +34,5 @@ RUN uv sync --frozen --extra dev
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY tests ./tests
+COPY scripts ./scripts
 CMD ["pytest"]

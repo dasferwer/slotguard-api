@@ -13,8 +13,12 @@ from slotguard.seed import seed_database
 
 @pytest.fixture(scope="session", autouse=True)
 def reset_database() -> Generator[None, None, None]:
+    if engine.url.database != "slotguard_test":
+        raise RuntimeError("Тесты разрешены только в отдельной БД slotguard_test")
     with engine.begin() as connection:
-        connection.execute(text("TRUNCATE TABLE audit_logs, bookings, rooms, users CASCADE"))
+        connection.execute(
+            text("TRUNCATE TABLE booking_requests, audit_logs, bookings, rooms, users CASCADE")
+        )
     seed_database()
     yield
 

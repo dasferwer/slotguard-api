@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -12,6 +12,8 @@ def _validate_aware(value: datetime, field_name: str) -> None:
 
 
 class BookingCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     room_id: UUID
     starts_at: datetime
     ends_at: datetime
@@ -23,12 +25,12 @@ class BookingCreate(BaseModel):
         _validate_aware(self.ends_at, "ends_at")
         if self.ends_at <= self.starts_at:
             raise ValueError("ends_at must be later than starts_at")
-        if self.starts_at <= datetime.now(UTC):
-            raise ValueError("starts_at must be in the future")
         return self
 
 
 class BookingUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     purpose: str | None = Field(default=None, min_length=3, max_length=500)
@@ -57,6 +59,7 @@ class BookingRead(BaseModel):
     starts_at: datetime
     ends_at: datetime
     purpose: str
+    version: int
     status: BookingStatus
     created_at: datetime
     updated_at: datetime

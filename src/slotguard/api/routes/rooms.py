@@ -1,14 +1,16 @@
+from datetime import UTC, datetime
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 
 from slotguard.api.dependencies import AdminUser, CurrentUser, DbSession
-from slotguard.models import Room, UserRole
+from slotguard.models import Booking, BookingStatus, Room, UserRole
 from slotguard.schemas.room import RoomCreate, RoomList, RoomRead, RoomUpdate
 from slotguard.services.audit import add_audit_log
+from slotguard.services.bookings import lock_room
+from slotguard.services.transactions import integrity_errors
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
 
@@ -52,24 +54,18 @@ def read_room(room_id: UUID, db: DbSession, current_user: CurrentUser) -> Room:
 
 @router.post("", response_model=RoomRead, status_code=status.HTTP_201_CREATED)
 def create_room(payload: RoomCreate, db: DbSession, admin: AdminUser) -> Room:
-    room = Room(**payload.model_dump())
-    db.add(room)
-    db.flush()
-    add_audit_log(
-        db,
-        actor_id=admin.id,
-        action="room.created",
-        entity_type="room",
-        entity_id=room.id,
-    )
-    try:
+    room = Room(id=uuid4(), **payload.model_dump())
+    with integrity_errors(db):
+        db.add(room)
+        db.flush()
+        add_audit_log(
+            db,
+            actor_id=admin.id,
+            action="room.created",
+            entity_type="room",
+            entity_id=room.id,
+        )
         db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Room name is already used",
-        ) from exc
     db.refresh(room)
     return room
 
@@ -81,7 +77,9 @@ def update_room(
     db: DbSession,
     admin: AdminUser,
 ) -> Room:
-    room = _get_room(db, room_id)
+    room = lock_room(db, room_id)
+    if payload.is_active is False:
+        ensure_no_bookings(db, room_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(room, field, value)
     add_audit_log(
@@ -91,22 +89,31 @@ def update_room(
         entity_type="room",
         entity_id=room.id,
     )
-    try:
+    with integrity_errors(db):
         db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Room name is already used",
-        ) from exc
     db.refresh(room)
     return room
 
 
+def ensure_no_bookings(db: DbSession, room_id: UUID) -> None:
+    occupied = db.scalar(
+        select(Booking.id)
+        .where(
+            Booking.room_id == room_id,
+            Booking.status == BookingStatus.ACTIVE,
+            Booking.ends_at > datetime.now(UTC),
+        )
+        .limit(1)
+    )
+    if occupied is not None:
+        raise HTTPException(status_code=409, detail="Сначала отмените незавершённые брони комнаты")
+
+
 @router.delete("/{room_id}", status_code=status.HTTP_204_NO_CONTENT)
 def deactivate_room(room_id: UUID, db: DbSession, admin: AdminUser) -> Response:
-    room = _get_room(db, room_id)
+    room = lock_room(db, room_id)
     if room.is_active:
+        ensure_no_bookings(db, room_id)
         room.is_active = False
         add_audit_log(
             db,

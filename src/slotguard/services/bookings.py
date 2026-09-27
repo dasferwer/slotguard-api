@@ -1,103 +1,108 @@
+import hashlib
+import json
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import HTTPException, status
-from sqlalchemy import Select, func, select
-from sqlalchemy.exc import IntegrityError
+from fastapi import HTTPException
+from sqlalchemy import Select, func, select, text
 from sqlalchemy.orm import Session
 
-from slotguard.models import Booking, BookingStatus, Room, User, UserRole
-from slotguard.schemas.booking import BookingCreate, BookingUpdate
+from slotguard.models import Booking, BookingRequest, BookingStatus, Room, User, UserRole
+from slotguard.schemas.booking import BookingCreate, BookingRead, BookingUpdate
 from slotguard.services.audit import add_audit_log
+from slotguard.services.transactions import integrity_errors
 
 
-def _get_active_room(db: Session, room_id: UUID) -> Room:
-    room = db.get(Room, room_id)
+def lock_room(db: Session, room_id: UUID) -> Room:
+    room = db.scalar(
+        select(Room)
+        .where(Room.id == room_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if room is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
-    if not room.is_active:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room is inactive")
+        raise HTTPException(status_code=404, detail="Комната не найдена")
     return room
+
+
+def ensure_active(room: Room) -> None:
+    if not room.is_active:
+        raise HTTPException(status_code=409, detail="Комната деактивирована")
 
 
 def get_booking(db: Session, booking_id: UUID) -> Booking:
     booking = db.get(Booking, booking_id)
     if booking is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
+        raise HTTPException(status_code=404, detail="Бронь не найдена")
     return booking
 
 
 def ensure_booking_access(booking: Booking, current_user: User) -> None:
     if current_user.role != UserRole.ADMIN and booking.user_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
+        raise HTTPException(status_code=404, detail="Бронь не найдена")
 
 
-def _overlap_exists(
-    db: Session,
-    *,
-    room_id: UUID,
-    starts_at: datetime,
-    ends_at: datetime,
-    exclude_booking_id: UUID | None = None,
-) -> bool:
-    query = select(Booking.id).where(
-        Booking.room_id == room_id,
-        Booking.status == BookingStatus.ACTIVE,
-        Booking.starts_at < ends_at,
-        Booking.ends_at > starts_at,
-    )
-    if exclude_booking_id is not None:
-        query = query.where(Booking.id != exclude_booking_id)
-    return db.scalar(query.limit(1)) is not None
-
-
-def _commit_booking(db: Session, booking: Booking) -> Booking:
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        if "no_overlapping_active_bookings" in str(exc.orig):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Room is already booked for the selected period",
-            ) from exc
-        raise
-    db.refresh(booking)
-    return booking
-
-
-def create_booking(db: Session, payload: BookingCreate, current_user: User) -> Booking:
-    _get_active_room(db, payload.room_id)
-    if _overlap_exists(
-        db,
-        room_id=payload.room_id,
-        starts_at=payload.starts_at,
-        ends_at=payload.ends_at,
-    ):
+def _lock_booking(db: Session, booking: Booking, user: User, version: int) -> Room:
+    ensure_booking_access(booking, user)
+    # Единый порядок блокировок исключает взаимную блокировку отмены и переноса.
+    room = lock_room(db, booking.room_id)
+    db.refresh(booking, with_for_update=True)
+    if booking.version != version:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Room is already booked for the selected period",
+            status_code=412, detail="Бронь уже изменена; получите актуальную версию"
         )
+    return room
 
+
+def create_booking(
+    db: Session,
+    payload: BookingCreate,
+    current_user: User,
+    key: str,
+) -> BookingRead:
+    normalized = payload.model_dump(mode="json")
+    normalized["starts_at"] = payload.starts_at.astimezone(UTC).isoformat()
+    normalized["ends_at"] = payload.ends_at.astimezone(UTC).isoformat()
+    fingerprint = hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()
+    # Блокировка ключа берётся до комнаты; повтор не ждёт чужую комнату и не создаёт вторую бронь.
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 101))"),
+        {"key": f"{current_user.id}:{key}"},
+    )
+    previous = db.get(BookingRequest, (current_user.id, key))
+    if previous is not None:
+        if previous.fingerprint != fingerprint:
+            raise HTTPException(status_code=409, detail="Ключ уже использован с другим запросом")
+        return BookingRead.model_validate(previous.response)
+    room = lock_room(db, payload.room_id)
+    ensure_active(room)
+    if payload.starts_at <= datetime.now(UTC):
+        raise HTTPException(status_code=422, detail="Начало брони должно быть в будущем")
     booking = Booking(
-        room_id=payload.room_id,
-        user_id=current_user.id,
-        starts_at=payload.starts_at,
-        ends_at=payload.ends_at,
-        purpose=payload.purpose,
-        status=BookingStatus.ACTIVE,
+        id=uuid4(), user_id=current_user.id, status=BookingStatus.ACTIVE, **payload.model_dump()
     )
-    db.add(booking)
-    db.flush()
-    add_audit_log(
-        db,
-        actor_id=current_user.id,
-        action="booking.created",
-        entity_type="booking",
-        entity_id=booking.id,
-        details={"room_id": str(payload.room_id)},
-    )
-    return _commit_booking(db, booking)
+    with integrity_errors(db):
+        db.add(booking)
+        db.flush()
+        response = BookingRead.model_validate(booking)
+        db.add(
+            BookingRequest(
+                user_id=current_user.id,
+                key=key,
+                fingerprint=fingerprint,
+                response=response.model_dump(mode="json"),
+            )
+        )
+        add_audit_log(
+            db,
+            actor_id=current_user.id,
+            action="booking.created",
+            entity_type="booking",
+            entity_id=booking.id,
+            details={"room_id": str(room.id), "version": booking.version},
+        )
+        db.commit()
+    return response
 
 
 def update_booking(
@@ -105,66 +110,55 @@ def update_booking(
     booking: Booking,
     payload: BookingUpdate,
     current_user: User,
+    version: int,
 ) -> Booking:
-    ensure_booking_access(booking, current_user)
+    room = _lock_booking(db, booking, current_user, version)
+    ensure_active(room)
     if booking.status != BookingStatus.ACTIVE:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cancelled booking cannot be changed",
-        )
-
+        raise HTTPException(status_code=409, detail="Отменённую бронь нельзя изменить")
+    if not payload.model_fields_set or any(
+        getattr(payload, field) is None for field in payload.model_fields_set
+    ):
+        raise HTTPException(status_code=422, detail="Передайте непустые значения изменяемых полей")
     starts_at = payload.starts_at or booking.starts_at
     ends_at = payload.ends_at or booking.ends_at
     if ends_at <= starts_at:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="ends_at must be later than starts_at",
-        )
+        raise HTTPException(status_code=422, detail="Конец брони должен быть позже начала")
     if payload.starts_at is not None and starts_at <= datetime.now(UTC):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="starts_at must be in the future",
+        raise HTTPException(status_code=422, detail="Начало брони должно быть в будущем")
+    with integrity_errors(db):
+        booking.starts_at, booking.ends_at = starts_at, ends_at
+        if payload.purpose is not None:
+            booking.purpose = payload.purpose
+        booking.version += 1
+        add_audit_log(
+            db,
+            actor_id=current_user.id,
+            action="booking.updated",
+            entity_type="booking",
+            entity_id=booking.id,
+            details={"version": booking.version},
         )
-    if _overlap_exists(
-        db,
-        room_id=booking.room_id,
-        starts_at=starts_at,
-        ends_at=ends_at,
-        exclude_booking_id=booking.id,
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Room is already booked for the selected period",
-        )
-
-    booking.starts_at = starts_at
-    booking.ends_at = ends_at
-    if payload.purpose is not None:
-        booking.purpose = payload.purpose
-    add_audit_log(
-        db,
-        actor_id=current_user.id,
-        action="booking.updated",
-        entity_type="booking",
-        entity_id=booking.id,
-    )
-    return _commit_booking(db, booking)
+        db.commit()
+    return booking
 
 
-def cancel_booking(db: Session, booking: Booking, current_user: User) -> Booking:
-    ensure_booking_access(booking, current_user)
+def cancel_booking(db: Session, booking: Booking, current_user: User, version: int) -> Booking:
+    _lock_booking(db, booking, current_user, version)
     if booking.status == BookingStatus.CANCELLED:
         return booking
-
     booking.status = BookingStatus.CANCELLED
+    booking.version += 1
     add_audit_log(
         db,
         actor_id=current_user.id,
         action="booking.cancelled",
         entity_type="booking",
         entity_id=booking.id,
+        details={"version": booking.version},
     )
-    return _commit_booking(db, booking)
+    db.commit()
+    return booking
 
 
 def list_bookings(

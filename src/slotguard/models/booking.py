@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 class Booking(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "bookings"
     __table_args__ = (
+        CheckConstraint("version > 0", name="ck_bookings_positive_version"),
         CheckConstraint("ends_at > starts_at", name="ck_bookings_valid_period"),
         CheckConstraint(
             "status IN ('active', 'cancelled')",
@@ -25,6 +26,8 @@ class Booking(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_bookings_room_period", "room_id", "starts_at", "ends_at"),
         Index("ix_bookings_user_created", "user_id", "created_at"),
     )
+
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
 
     room_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),

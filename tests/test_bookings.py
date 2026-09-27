@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -23,7 +24,7 @@ def test_booking_conflict_cancellation_and_visibility(
 
     create_response = client.post(
         "/api/v1/bookings",
-        headers=first_user,
+        headers={**first_user, "Idempotency-Key": str(uuid4())},
         json=booking_payload,
     )
     assert create_response.status_code == 201
@@ -37,7 +38,7 @@ def test_booking_conflict_cancellation_and_visibility(
     }
     conflict_response = client.post(
         "/api/v1/bookings",
-        headers=second_user,
+        headers={**second_user, "Idempotency-Key": str(uuid4())},
         json=conflict_payload,
     )
     assert conflict_response.status_code == 409
@@ -56,21 +57,21 @@ def test_booking_conflict_cancellation_and_visibility(
     }
     adjacent_response = client.post(
         "/api/v1/bookings",
-        headers=second_user,
+        headers={**second_user, "Idempotency-Key": str(uuid4())},
         json=adjacent_payload,
     )
     assert adjacent_response.status_code == 201
 
     cancel_response = client.post(
         f"/api/v1/bookings/{booking_id}/cancel",
-        headers=first_user,
+        headers={**first_user, "If-Match": '"1"'},
     )
     assert cancel_response.status_code == 200
     assert cancel_response.json()["status"] == "cancelled"
 
     replacement_response = client.post(
         "/api/v1/bookings",
-        headers=second_user,
+        headers={**second_user, "Idempotency-Key": str(uuid4())},
         json=booking_payload,
     )
     assert replacement_response.status_code == 201
@@ -86,7 +87,7 @@ def test_user_can_reschedule_own_booking(
     ends_at = starts_at + timedelta(minutes=45)
     create_response = client.post(
         "/api/v1/bookings",
-        headers=headers,
+        headers={**headers, "Idempotency-Key": str(uuid4()), "If-Match": '"1"'},
         json={
             "room_id": room_id,
             "starts_at": starts_at.isoformat(),
@@ -100,7 +101,7 @@ def test_user_can_reschedule_own_booking(
 
     update_response = client.patch(
         f"/api/v1/bookings/{booking_id}",
-        headers=headers,
+        headers={**headers, "Idempotency-Key": str(uuid4()), "If-Match": '"1"'},
         json={
             "starts_at": new_start.isoformat(),
             "ends_at": new_end.isoformat(),

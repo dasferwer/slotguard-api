@@ -1,181 +1,118 @@
 # SlotGuard API
 
-Production-style REST API for booking meeting rooms. SlotGuard demonstrates
-authentication, role-based access control, PostgreSQL transactions, audit logs,
-pagination and database-level protection against overlapping bookings.
+API бронирования переговорных на FastAPI и PostgreSQL. Основное внимание уделено
+целостности расписания: пересекающиеся брони запрещены в БД, повторный запрос
+не создаёт новую запись, а перенос и отмена защищены от потери изменений.
 
 ## История проекта
 
-- первоначальная разработка: февраль — октябрь 2023 года (период указан
-  приблизительно);
-- подготовка и публикация портфолио-версии: август 2026 года.
+- первоначальная разработка: февраль — октябрь 2023 года, приблизительно;
+- подготовка портфолио-версии: август 2026 года;
+- доработка транзакций и конкурентных сценариев: сентябрь 2026 года.
 
-Репозиторий содержит актуализированную и документированную версию проекта,
-подготовленную для публичного портфолио.
+Это портфолио-проект. Репозиторий не подтверждает production-эксплуатацию
+или работу под определённой нагрузкой.
 
 ## Возможности
 
-- регистрация и JWT-аутентификация;
-- роли `user` и `admin`;
-- управление переговорными комнатами;
-- создание, перенос и отмена бронирований;
-- просмотр пользователем только собственных броней;
-- административный просмотр всех броней;
-- фильтрация и пагинация;
-- журнал значимых действий;
-- `X-Request-ID` и журналирование HTTP-запросов;
-- `/health`, Swagger UI и ReDoc;
-- миграции, идемпотентные seed-данные и интеграционные тесты.
+- Регистрация, JWT с обязательными сроком действия и идентификатором пользователя,
+  роли `user` и `admin`, хеширование паролей через scrypt.
+- Создание, перенос и отмена броней; пользователи видят только свои записи.
+- Управление комнатами; деактивация разрешена после отмены незавершённых броней.
+- Соседние интервалы разрешены, пересекающиеся активные брони запрещены.
+- Идемпотентное создание с сохранением исходного ответа; проверка версии при изменении.
+- Аудит в одной транзакции с бизнес-операцией, фильтры и пагинация.
+- Ограниченное ожидание блокировок, ответ `503` с `Retry-After`, журнал HTTP-запросов.
+- Alembic, отдельная тестовая БД, конкурентные тесты и GitHub Actions.
 
-## Ключевое бизнес-правило
+## Запуск
 
-У активных броней одной комнаты не может быть пересекающихся временных
-интервалов. API выполняет раннюю проверку и возвращает `409 Conflict`, а
-PostgreSQL дополнительно защищает инвариант с помощью exclusion constraint.
-Поэтому два одновременных запроса не смогут создать конфликтующие записи.
-
-Соседние интервалы разрешены: бронь `10:00–11:00` не конфликтует с
-`11:00–12:00`. После отмены временной интервал снова доступен.
-
-## Стек
-
-- Python 3.12;
-- FastAPI и Pydantic;
-- SQLAlchemy 2;
-- PostgreSQL 17;
-- JWT и RBAC;
-- Alembic;
-- Docker и Docker Compose;
-- pytest, HTTPX2 и Ruff.
-
-## Быстрый запуск
-
-Требуется установленный и запущенный Docker.
+Требуются Docker и Docker Compose. Для локальных Python-проверок — Python 3.12+ и uv.
+Стек: FastAPI, Pydantic, SQLAlchemy 2, PostgreSQL 17, Alembic, pytest, Ruff, mypy.
 
 ```bash
-docker compose up --build --detach
+docker compose up --build -d --wait api
 ```
 
-После запуска:
+Отдельный сервис `migrate` применяет миграции и создаёт демонстрационные данные.
+После его успешного завершения запускается API под пользователем с UID 10001.
+Порт опубликован только на `127.0.0.1`.
 
-- Swagger UI: <http://localhost:8010/docs>;
-- ReDoc: <http://localhost:8010/redoc>;
-- проверка приложения и БД: <http://localhost:8010/health>.
+- Swagger UI: <http://localhost:8010/docs>
+- ReDoc: <http://localhost:8010/redoc>
+- Проверка приложения и БД: <http://localhost:8010/health>
 
-При старте контейнер автоматически применяет миграции и запускает
-идемпотентный seed. Локальная учётная запись администратора:
-
-```text
-email: admin@example.com
-password: ChangeMe123!
-```
-
-Это только демонстрационные значения. Для любого внешнего окружения задайте
-собственные значения из `.env.example`.
-
-Остановить приложение:
+Локальный администратор: `admin@example.com`, пароль `ChangeMe123!`.
+Это публичные демонстрационные значения. Параметры окружения перечислены
+в [.env.example](.env.example): подключение к БД, секрет JWT, срок токена,
+учётная запись администратора, порт и уровень логирования.
+Seed не перезаписывает существующего администратора: изменение переменной
+пароля само по себе не меняет пароль уже созданной учётной записи.
 
 ```bash
 docker compose down
 ```
 
-Удалить локальные данные PostgreSQL:
+Остановка сохраняет данные. Не используйте `down -v` для рабочего стенда:
+эта команда удаляет его том PostgreSQL.
 
-```bash
-docker compose down --volumes
-```
+## Контракт бронирования
 
-Последняя команда необратимо удаляет только Docker volume этого проекта.
+1. Зарегистрируйтесь: `POST /api/v1/auth/register`.
+2. Получите токен: `POST /api/v1/auth/login`; передавайте `Authorization: Bearer …`.
+3. Выберите комнату через `GET /api/v1/rooms`.
+4. Создайте бронь через `POST /api/v1/bookings` с заголовком `Idempotency-Key`.
+5. Передавайте текущую версию в `If-Match: "1"` при `PATCH /api/v1/bookings/{id}`
+   и `POST /api/v1/bookings/{id}/cancel`.
+
+Тело создания: `room_id`, `starts_at`, `ends_at`, `purpose`. Даты должны содержать
+часовой пояс; начало новой брони должно быть в будущем. Ответ содержит `version`.
+Для ключа допустимы 1–128 латинских букв, цифр и символов `._:-`.
+
+Одинаковый ключ в пределах пользователя и то же содержимое возвращают исходный
+ответ `201`, даже если бронь позднее изменена или отменена. Актуальное состояние
+получайте отдельным `GET`. Другой запрос с тем же ключом возвращает `409`.
+Неудачные операции не сохраняют ключ. Ответы хранятся бессрочно; автоматической
+очистки пока нет, поскольку она изменит гарантию повторов.
+
+Для изменения отсутствие `If-Match` даёт `428`, неправильный формат — `400`,
+устаревшая версия — `412`. Успешное изменение увеличивает версию. Повторная отмена
+с актуальной версией возвращает запись без нового события аудита; повтор со старой
+версией возвращает `412`. Перечитайте бронь перед повторной попыткой.
+
+Это изменение контракта: старым клиентам нужны `Idempotency-Key` и `If-Match`.
 
 ## Проверки
 
-Интеграционные тесты используют отдельный контейнер PostgreSQL:
-
 ```bash
-docker compose --profile test up --build \
-  --abort-on-container-exit --exit-code-from test test
-docker compose --profile test down --volumes
-```
-
-Статические проверки локально:
-
-```bash
-uv sync --extra dev
+uv sync --frozen --extra dev
 uv run ruff format --check .
 uv run ruff check .
+uv run mypy src
+
+docker compose --profile test build test
+docker compose --profile test run --rm test
+docker compose --profile test run --rm test python scripts/check_migration.py
 ```
 
-## Основной API-сценарий
+Тесты выполняются в `slotguard_test`; очистка другой БД запрещена защитной проверкой.
+Проверка миграции откатывает только новую ревизию и снова применяет её, сравнивая
+контрольную сумму пользователей, комнат, броней и аудита. Она удаляет тестовые
+ключи повторов и сбрасывает тестовые версии; запускать её на рабочих данных нельзя.
 
-1. `POST /api/v1/auth/register` — создать пользователя.
-2. `POST /api/v1/auth/login` — получить Bearer token.
-3. `GET /api/v1/rooms` — выбрать активную комнату.
-4. `POST /api/v1/bookings` — создать бронь.
-5. `PATCH /api/v1/bookings/{id}` — перенести бронь.
-6. `POST /api/v1/bookings/{id}/cancel` — отменить бронь.
+CI повторяет эти проверки и проверяет запуск полного Compose-стенда.
+[Результаты проверок](docs/verification.md).
 
-Администратор дополнительно может создавать, редактировать и деактивировать
-комнаты. Полный контракт доступен в OpenAPI.
+## Архитектура и ограничения
 
-## Архитектура
+HTTP-слой проверяет входные данные и права. Сервис бронирований управляет
+блокировками, версиями, идемпотентностью и транзакцией. PostgreSQL хранит данные
+и гарантирует отсутствие пересечений через exclusion constraint.
+[Порядок блокировок и сценарии отказа](docs/architecture.md).
 
-```mermaid
-flowchart LR
-    Client[Swagger / REST client]
-    API[FastAPI routes]
-    Auth[JWT and RBAC]
-    Services[Booking services]
-    ORM[SQLAlchemy]
-    DB[(PostgreSQL)]
-
-    Client --> API
-    API --> Auth
-    API --> Services
-    Services --> ORM
-    ORM --> DB
-```
-
-```mermaid
-erDiagram
-    USER ||--o{ BOOKING : creates
-    ROOM ||--o{ BOOKING : contains
-    USER ||--o{ AUDIT_LOG : acts
-
-    USER {
-      uuid id PK
-      string email UK
-      string role
-      boolean is_active
-    }
-    ROOM {
-      uuid id PK
-      string name UK
-      integer capacity
-      boolean is_active
-    }
-    BOOKING {
-      uuid id PK
-      uuid user_id FK
-      uuid room_id FK
-      timestamptz starts_at
-      timestamptz ends_at
-      string status
-    }
-    AUDIT_LOG {
-      uuid id PK
-      uuid actor_id FK
-      string action
-      jsonb details
-    }
-```
-
-Подробные решения и сценарии отказа описаны в
-[`docs/architecture.md`](./docs/architecture.md).
-
-## Project summary in English
-
-SlotGuard is a containerized FastAPI service for meeting-room reservations. It
-uses PostgreSQL, SQLAlchemy, JWT/RBAC, Alembic migrations, audit logs, health
-checks and integration tests. A PostgreSQL exclusion constraint preserves the
-no-overlap invariant under concurrent requests, while cancelled bookings free
-their original time interval.
+Операции одной комнаты последовательно берут её блокировку. Это упрощает
+согласование расписания и деактивации, но ограничивает пропускную способность
+при высокой конкуренции за одну комнату. Замеров нагрузочных пределов нет.
+Не реализованы квоты регистрации и входа, отзыв отдельных JWT, автоматическая
+очистка аудита и ключей, резервное копирование и TLS-терминация.
+Для внешнего размещения эти возможности нужно обеспечить окружением или отдельной доработкой.

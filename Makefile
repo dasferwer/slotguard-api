@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint format-check check
+.PHONY: up down logs test lint format-check typecheck check
 
 up:
 	docker compose up --build --detach
@@ -18,4 +18,7 @@ lint:
 format-check:
 	uv run --extra dev ruff format --check .
 
-check: format-check lint test
+typecheck:
+	uv run --extra dev mypy src
+
+check: format-check lint typecheck test
