@@ -1,0 +1,36 @@
+{
+  "checked_at_utc": "2026-10-02T21:01:03.938539+00:00",
+  "application_base_sha": "6e16863f2a7db06da776010922901cbf82d4cbe6",
+  "scope": "Локальные проверки изменений этапа D; CI опубликованного коммита проверяется отдельно.",
+  "environment": {
+    "host": "macOS arm64",
+    "database": "PostgreSQL 17",
+    "compose": "5.4.0"
+  },
+  "pytest_passed": 18,
+  "ruff": "passed",
+  "format": "passed",
+  "scenario": {
+    "scenario": "backup_restore",
+    "full_snapshot_equal": true,
+    "tables": {
+      "alembic_version": 1,
+      "audit_logs": 3,
+      "booking_requests": 1,
+      "bookings": 1,
+      "rooms": 4,
+      "users": 2
+    },
+    "backup_sha256": "e9ae2e1afab1dace52472cc0c2de0f8f9ddc309efd77b968fb7ee4deb5c4fe19",
+    "idempotent_replay": true,
+    "overlap_rejected": true,
+    "restored_api_database_verified": true,
+    "source_database_preserved": true
+  },
+  "safety_tests_passed": 3,
+  "safety_checks": {
+    "foreign_api_refused_before_mutation": true,
+    "already_removed_api_cleanup": true,
+    "database_removed_despite_container_removal_failure": true
+  }
+}

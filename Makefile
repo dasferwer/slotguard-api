@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint format-check typecheck check
+.PHONY: up down logs test lint format-check typecheck check recovery
 
 up:
 	docker compose up --build --detach
@@ -22,3 +22,5 @@ typecheck:
 	uv run --extra dev mypy src
 
 check: format-check lint typecheck test
+recovery:
+	uv run python scripts/recovery_smoke.py
